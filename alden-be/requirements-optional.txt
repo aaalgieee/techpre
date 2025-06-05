@@ -1,0 +1,12 @@
+# Optional packages for advanced features
+# These packages might require additional setup on Windows
+
+# For document processing (PDF/Image OCR)
+pillow==10.1.0
+opencv-python==4.8.1.78
+
+# For audio processing (if implementing audio features)
+# pyaudio==0.2.11  # Requires additional Windows setup
+
+# For screen capture (if implementing screen sharing)
+# mss==9.0.1 

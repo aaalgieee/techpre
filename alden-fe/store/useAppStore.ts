@@ -1,6 +1,14 @@
 import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { 
+  studySessionsAPI, 
+  mindfulSessionsAPI, 
+  aiChatAPI, 
+  documentsAPI, 
+  progressAPI,
+  transformers 
+} from '../services/api';
 
 export interface StudySession {
   id: string;
@@ -77,34 +85,49 @@ interface AppState {
   // UI State
   currentScreen: string;
   isTimerRunning: boolean;
+  
+  // Loading states
+  isLoading: boolean;
+  error: string | null;
 }
 
 interface AppActions {
   // Study Session Actions
-  startStudySession: (session: Omit<StudySession, 'id' | 'startTime' | 'completed'>) => void;
-  endStudySession: (focusScore?: number, notes?: string) => void;
-  addStudySession: (session: StudySession) => void;
+  startStudySession: (session: Omit<StudySession, 'id' | 'startTime' | 'completed'>) => Promise<void>;
+  endStudySession: (focusScore?: number, notes?: string) => Promise<void>;
+  loadStudySessions: () => Promise<void>;
+  checkActiveSession: () => Promise<void>;
   
   // Mindful Session Actions
-  completeMindfulSession: (sessionId: string, rating?: number) => void;
+  completeMindfulSession: (sessionId: string, rating?: number) => Promise<void>;
+  loadMindfulSessions: () => Promise<void>;
+  loadPrebuiltSessions: () => Promise<void>;
   
   // Aida Actions
-  createConversation: (title?: string, subject?: string) => string;
-  sendMessage: (conversationId: string, content: string) => void;
-  addAidaResponse: (conversationId: string, content: string) => void;
+  createConversation: (title?: string, subject?: string) => Promise<string>;
+  sendMessage: (conversationId: string, content: string) => Promise<void>;
+  loadConversations: () => Promise<void>;
+  loadConversation: (conversationId: string) => Promise<void>;
   setActiveConversation: (conversationId: string | null) => void;
-  deleteConversation: (conversationId: string) => void;
-  uploadDocument: (document: Omit<UploadedDocument, 'id' | 'uploadDate'>) => void;
-  removeDocument: (documentId: string) => void;
+  deleteConversation: (conversationId: string) => Promise<void>;
+  uploadDocument: (document: Omit<UploadedDocument, 'id' | 'uploadDate'>) => Promise<void>;
+  removeDocument: (documentId: string) => Promise<void>;
+  loadDocuments: () => Promise<void>;
   setAidaTyping: (typing: boolean) => void;
   
   // Progress Actions
-  updateDailyGoal: (goal: number) => void;
-  updateStreak: () => void;
+  loadUserProgress: () => Promise<void>;
+  updateDailyGoal: (goal: number) => Promise<void>;
+  updateStreak: () => Promise<void>;
   
   // UI Actions
   setCurrentScreen: (screen: string) => void;
   setTimerRunning: (running: boolean) => void;
+  setLoading: (loading: boolean) => void;
+  setError: (error: string | null) => void;
+  
+  // Initialization
+  initializeApp: () => Promise<void>;
   
   // Reset Actions
   reset: () => void;
@@ -115,44 +138,7 @@ type AppStore = AppState & AppActions;
 const initialState: AppState = {
   studySessions: [],
   activeSession: null,
-  mindfulSessions: [
-    {
-      id: '1',
-      title: 'Focus Boost',
-      category: 'pre_study',
-      duration: 240, // 4 minutes
-      audioUrl: '', // We'll add actual audio later
-      description: 'A 4-minute meditation to prepare your mind for focused study',
-      completed: false,
-    },
-    {
-      id: '2',
-      title: 'SOS Breathing',
-      category: 'quick_relief',
-      duration: 60, // 1 minute
-      audioUrl: '',
-      description: 'Quick breathing exercise for immediate stress relief',
-      completed: false,
-    },
-    {
-      id: '3',
-      title: 'Study Reflection',
-      category: 'post_study',
-      duration: 420, // 7 minutes
-      audioUrl: '',
-      description: 'Wind down and reflect on your study session',
-      completed: false,
-    },
-    {
-      id: '4',
-      title: 'Pre-Exam Calm',
-      category: 'exam_support',
-      duration: 600, // 10 minutes
-      audioUrl: '',
-      description: 'Calm your nerves before an important exam',
-      completed: false,
-    },
-  ],
+  mindfulSessions: [],
   completedMindfulSessions: [],
   aidaConversations: [],
   activeConversation: null,
@@ -165,6 +151,8 @@ const initialState: AppState = {
   totalMindfulTime: 0,
   currentScreen: 'home',
   isTimerRunning: false,
+  isLoading: false,
+  error: null,
 };
 
 export const useAppStore = create<AppStore>()(
@@ -172,235 +160,439 @@ export const useAppStore = create<AppStore>()(
     (set, get) => ({
       ...initialState,
       
-      startStudySession: (sessionData) => {
-        const newSession: StudySession = {
-          ...sessionData,
-          id: Date.now().toString(),
-          startTime: new Date(),
-          completed: false,
-        };
-        
-        set({
-          activeSession: newSession,
-          isTimerRunning: true,
-        });
+      // Initialize app data
+      initializeApp: async () => {
+        try {
+          set({ isLoading: true, error: null });
+          
+          // Load all data in parallel
+          await Promise.all([
+            get().loadStudySessions(),
+            get().checkActiveSession(),
+            get().loadConversations(),
+            get().loadDocuments(),
+            get().loadUserProgress(),
+            get().loadPrebuiltSessions(),
+          ]);
+          
+        } catch (error) {
+          console.error('Failed to initialize app:', error);
+          set({ error: error.message });
+        } finally {
+          set({ isLoading: false });
+        }
       },
       
-      endStudySession: (focusScore, notes) => {
-        const { activeSession, studySessions, todayStudyTime, totalStudyTime } = get();
-        
-        if (!activeSession) return;
-        
-        const endTime = new Date();
-        const actualDuration = Math.floor(
-          (endTime.getTime() - activeSession.startTime.getTime()) / 1000 / 60
-        );
-        
-        const completedSession: StudySession = {
-          ...activeSession,
-          endTime,
-          duration: actualDuration,
-          completed: true,
-          focusScore,
-          notes,
-        };
-        
-        set({
-          activeSession: null,
-          studySessions: [...studySessions, completedSession],
-          todayStudyTime: todayStudyTime + actualDuration,
-          totalStudyTime: totalStudyTime + actualDuration,
-          isTimerRunning: false,
-        });
+      // Study Session Actions
+      startStudySession: async (sessionData) => {
+        try {
+          set({ isLoading: true, error: null });
+          
+          const apiSession = await studySessionsAPI.create(sessionData);
+          const session = transformers.studySessionFromAPI(apiSession);
+          
+          set({
+            activeSession: session,
+            isTimerRunning: true,
+          });
+          
+        } catch (error) {
+          console.error('Failed to start study session:', error);
+          set({ error: error.message });
+          throw error;
+        } finally {
+          set({ isLoading: false });
+        }
       },
       
-      addStudySession: (session) => {
-        const { studySessions } = get();
-        set({
-          studySessions: [...studySessions, session],
-        });
+      endStudySession: async (focusScore, notes) => {
+        try {
+          const { activeSession } = get();
+          if (!activeSession) return;
+          
+          set({ isLoading: true, error: null });
+          
+          const apiSession = await studySessionsAPI.endSession(activeSession.id, {
+            focus_score: focusScore,
+            notes,
+          });
+          
+          const completedSession = transformers.studySessionFromAPI(apiSession);
+          
+          // Update sessions list
+          const { studySessions } = get();
+          const updatedSessions = studySessions.map(s => 
+            s.id === activeSession.id ? completedSession : s
+          );
+          
+          // If session not in list, add it
+          if (!studySessions.find(s => s.id === activeSession.id)) {
+            updatedSessions.push(completedSession);
+          }
+          
+          set({
+            activeSession: null,
+            studySessions: updatedSessions,
+            isTimerRunning: false,
+          });
+          
+          // Reload user progress
+          await get().loadUserProgress();
+          
+        } catch (error) {
+          console.error('Failed to end study session:', error);
+          set({ error: error.message });
+          throw error;
+        } finally {
+          set({ isLoading: false });
+        }
       },
       
-      completeMindfulSession: (sessionId, rating) => {
-        const { completedMindfulSessions, mindfulSessions, totalMindfulTime } = get();
-        const session = mindfulSessions.find(s => s.id === sessionId);
-        
-        if (!session) return;
-        
-        const updatedSessions = mindfulSessions.map(s => 
-          s.id === sessionId 
-            ? { ...s, completed: true, completedAt: new Date(), rating }
-            : s
-        );
-        
-        set({
-          mindfulSessions: updatedSessions,
-          completedMindfulSessions: [...completedMindfulSessions, sessionId],
-          totalMindfulTime: totalMindfulTime + Math.floor(session.duration / 60),
-        });
+      loadStudySessions: async () => {
+        try {
+          const apiSessions = await studySessionsAPI.getAll();
+          const sessions = apiSessions.map(transformers.studySessionFromAPI);
+          set({ studySessions: sessions });
+        } catch (error) {
+          console.error('Failed to load study sessions:', error);
+          set({ error: error.message });
+        }
+      },
+      
+      checkActiveSession: async () => {
+        try {
+          const apiSession = await studySessionsAPI.getActive();
+          if (apiSession) {
+            const session = transformers.studySessionFromAPI(apiSession);
+            set({ activeSession: session, isTimerRunning: true });
+          }
+        } catch (error) {
+          console.error('Failed to check active session:', error);
+          // Don't set error for this, as no active session is normal
+        }
+      },
+      
+      // Mindful Session Actions
+      completeMindfulSession: async (sessionId, rating) => {
+        try {
+          set({ isLoading: true, error: null });
+          
+          const apiSession = await mindfulSessionsAPI.complete(sessionId, rating);
+          const completedSession = transformers.mindfulSessionFromAPI(apiSession);
+          
+          const { mindfulSessions, completedMindfulSessions } = get();
+          const updatedSessions = mindfulSessions.map(s => 
+            s.id === sessionId ? completedSession : s
+          );
+          
+          set({
+            mindfulSessions: updatedSessions,
+            completedMindfulSessions: [...completedMindfulSessions, sessionId],
+          });
+          
+          // Reload user progress
+          await get().loadUserProgress();
+          
+        } catch (error) {
+          console.error('Failed to complete mindful session:', error);
+          set({ error: error.message });
+          throw error;
+        } finally {
+          set({ isLoading: false });
+        }
+      },
+      
+      loadMindfulSessions: async () => {
+        try {
+          const apiSessions = await mindfulSessionsAPI.getAll();
+          const sessions = apiSessions.map(transformers.mindfulSessionFromAPI);
+          set({ mindfulSessions: sessions });
+        } catch (error) {
+          console.error('Failed to load mindful sessions:', error);
+          set({ error: error.message });
+        }
+      },
+      
+      loadPrebuiltSessions: async () => {
+        try {
+          const prebuiltSessions = await mindfulSessionsAPI.getPrebuilt();
+          // Add prebuilt sessions to mindful sessions if not already present
+          const { mindfulSessions } = get();
+          const existingIds = new Set(mindfulSessions.map(s => s.id));
+          
+          const newSessions = prebuiltSessions
+            .filter(session => !existingIds.has(session.id))
+            .map(session => ({
+              ...session,
+              completed: false,
+              audioUrl: session.audio_url,
+            }));
+          
+          if (newSessions.length > 0) {
+            set({ mindfulSessions: [...mindfulSessions, ...newSessions] });
+          }
+        } catch (error) {
+          console.error('Failed to load prebuilt sessions:', error);
+          // Don't set error for this, fallback to existing sessions
+        }
       },
       
       // Aida Actions
-      createConversation: (title, subject) => {
-        const { aidaConversations } = get();
-        const conversationId = Date.now().toString();
-        const newConversation: AidaConversation = {
-          id: conversationId,
-          title: title || 'New Conversation',
-          subject,
-          lastMessage: new Date(),
-          messages: [],
-        };
-        
-        set({
-          aidaConversations: [...aidaConversations, newConversation],
-          activeConversation: conversationId,
-        });
-        
-        return conversationId;
+      createConversation: async (title, subject) => {
+        try {
+          set({ isLoading: true, error: null });
+          
+          const apiConversation = await aiChatAPI.createConversation(
+            title || 'New Conversation', 
+            subject
+          );
+          const conversation = transformers.conversationFromAPI(apiConversation);
+          
+          const { aidaConversations } = get();
+          set({
+            aidaConversations: [conversation, ...aidaConversations],
+            activeConversation: conversation.id,
+          });
+          
+          return conversation.id;
+          
+        } catch (error) {
+          console.error('Failed to create conversation:', error);
+          set({ error: error.message });
+          throw error;
+        } finally {
+          set({ isLoading: false });
+        }
       },
       
-      sendMessage: (conversationId, content) => {
-        const { aidaConversations } = get();
-        const messageId = Date.now().toString();
-        const userMessage: AidaMessage = {
-          id: messageId,
-          type: 'user',
-          content,
-          timestamp: new Date(),
-          conversationId,
-        };
-        
-        const updatedConversations = aidaConversations.map(conv => 
-          conv.id === conversationId 
-            ? {
-                ...conv,
-                messages: [...conv.messages, userMessage],
-                lastMessage: new Date(),
-              }
-            : conv
-        );
-        
-        set({
-          aidaConversations: updatedConversations,
-          isAidaTyping: true,
-        });
-        
-        // Simulate AI response after a delay
-        setTimeout(() => {
-          get().addAidaResponse(conversationId, get().generateAidaResponse(content));
-        }, 1500 + Math.random() * 2000); // 1.5-3.5 second delay
+      sendMessage: async (conversationId, content) => {
+        try {
+          const { aidaConversations } = get();
+          
+          // Add user message immediately for better UX
+          const userMessage: AidaMessage = {
+            id: Date.now().toString(),
+            type: 'user',
+            content,
+            timestamp: new Date(),
+            conversationId,
+          };
+          
+          const updatedConversations = aidaConversations.map(conv => 
+            conv.id === conversationId 
+              ? {
+                  ...conv,
+                  messages: [...conv.messages, userMessage],
+                  lastMessage: new Date(),
+                }
+              : conv
+          );
+          
+          set({
+            aidaConversations: updatedConversations,
+            isAidaTyping: true,
+          });
+          
+          // Send message to API
+          const response = await aiChatAPI.sendMessage(content, conversationId);
+          
+          // The backend will process the AI response in the background
+          // We need to poll for new messages or implement real-time updates
+          setTimeout(async () => {
+            try {
+              await get().loadConversation(conversationId);
+            } catch (error) {
+              console.error('Failed to load updated conversation:', error);
+            } finally {
+              set({ isAidaTyping: false });
+            }
+          }, 2000); // Wait 2 seconds then reload conversation
+          
+        } catch (error) {
+          console.error('Failed to send message:', error);
+          set({ error: error.message, isAidaTyping: false });
+          throw error;
+        }
       },
       
-      addAidaResponse: (conversationId, content) => {
-        const { aidaConversations } = get();
-        const messageId = Date.now().toString();
-        const aidaMessage: AidaMessage = {
-          id: messageId,
-          type: 'assistant',
-          content,
-          timestamp: new Date(),
-          conversationId,
-        };
-        
-        const updatedConversations = aidaConversations.map(conv => 
-          conv.id === conversationId 
-            ? {
-                ...conv,
-                messages: [...conv.messages, aidaMessage],
-                lastMessage: new Date(),
-              }
-            : conv
-        );
-        
-        set({
-          aidaConversations: updatedConversations,
-          isAidaTyping: false,
-        });
+      loadConversations: async () => {
+        try {
+          const apiConversations = await aiChatAPI.getConversations();
+          const conversations = apiConversations.map(transformers.conversationFromAPI);
+          set({ aidaConversations: conversations });
+        } catch (error) {
+          console.error('Failed to load conversations:', error);
+          set({ error: error.message });
+        }
       },
       
-      generateAidaResponse: (userMessage: string) => {
-        // Simple response generator for MVP - in real app this would call Gemini API
-        const lowerMessage = userMessage.toLowerCase();
-        
-        if (lowerMessage.includes('math') || lowerMessage.includes('calculus') || lowerMessage.includes('algebra')) {
-          return "I'd be happy to help with math! Can you share the specific problem or concept you're working on? I can break it down step by step and create practice problems for you.";
+      loadConversation: async (conversationId) => {
+        try {
+          const apiConversation = await aiChatAPI.getConversation(conversationId);
+          const conversation = transformers.conversationFromAPI(apiConversation);
+          
+          const { aidaConversations } = get();
+          const updatedConversations = aidaConversations.map(conv =>
+            conv.id === conversationId ? conversation : conv
+          );
+          
+          set({ aidaConversations: updatedConversations });
+        } catch (error) {
+          console.error('Failed to load conversation:', error);
+          set({ error: error.message });
         }
-        
-        if (lowerMessage.includes('physics')) {
-          return "Physics can be challenging but rewarding! What topic are you studying? I can explain concepts, provide examples, and help you understand the underlying principles.";
-        }
-        
-        if (lowerMessage.includes('study') || lowerMessage.includes('learn')) {
-          return "Great question about studying! Here are some tips:\n\n• Break complex topics into smaller chunks\n• Use active recall to test yourself\n• Practice spaced repetition\n• Connect new concepts to what you already know\n\nWhat subject are you focusing on?";
-        }
-        
-        if (lowerMessage.includes('exam') || lowerMessage.includes('test')) {
-          return "Preparing for an exam? Here's how I can help:\n\n• Create practice questions from your notes\n• Generate flashcards for key concepts\n• Build a study schedule\n• Explain difficult topics\n\nWould you like to upload your study materials so I can create personalized practice questions?";
-        }
-        
-        if (lowerMessage.includes('flashcard') || lowerMessage.includes('quiz')) {
-          return "I can create flashcards and quizzes based on your study materials! Just upload your notes, textbook chapters, or lecture slides, and I'll generate:\n\n• Key term flashcards\n• Multiple choice questions\n• Short answer prompts\n• Concept review questions\n\nWhat material would you like me to work with?";
-        }
-        
-        return "I'm here to help with your studies! I can:\n\n• Explain complex concepts in simple terms\n• Create study materials like flashcards and quizzes\n• Help you organize information and create outlines\n• Answer questions about any subject\n• Provide study strategies\n\nWhat would you like to work on today?";
       },
       
       setActiveConversation: (conversationId) => {
         set({ activeConversation: conversationId });
       },
       
-      deleteConversation: (conversationId) => {
-        const { aidaConversations, activeConversation } = get();
-        const updatedConversations = aidaConversations.filter(conv => conv.id !== conversationId);
-        
-        set({
-          aidaConversations: updatedConversations,
-          activeConversation: activeConversation === conversationId ? null : activeConversation,
-        });
+      deleteConversation: async (conversationId) => {
+        try {
+          set({ isLoading: true, error: null });
+          
+          await aiChatAPI.deleteConversation(conversationId);
+          
+          const { aidaConversations, activeConversation } = get();
+          const updatedConversations = aidaConversations.filter(conv => conv.id !== conversationId);
+          
+          set({
+            aidaConversations: updatedConversations,
+            activeConversation: activeConversation === conversationId ? null : activeConversation,
+          });
+          
+        } catch (error) {
+          console.error('Failed to delete conversation:', error);
+          set({ error: error.message });
+          throw error;
+        } finally {
+          set({ isLoading: false });
+        }
       },
       
-      uploadDocument: (document) => {
-        const { uploadedDocuments } = get();
-        const newDocument: UploadedDocument = {
-          ...document,
-          id: Date.now().toString(),
-          uploadDate: new Date(),
-        };
-        
-        set({
-          uploadedDocuments: [...uploadedDocuments, newDocument],
-        });
+      uploadDocument: async (document) => {
+        try {
+          set({ isLoading: true, error: null });
+          
+          // Create FormData for file upload
+          const formData = new FormData();
+          formData.append('file', {
+            uri: document.uri,
+            name: document.name,
+            type: document.type === 'pdf' ? 'application/pdf' : 
+                  document.type === 'image' ? 'image/jpeg' : 'text/plain',
+          } as any);
+          
+          const apiDocument = await documentsAPI.upload(formData);
+          const newDocument = transformers.documentFromAPI(apiDocument);
+          
+          const { uploadedDocuments } = get();
+          set({
+            uploadedDocuments: [newDocument, ...uploadedDocuments],
+          });
+          
+        } catch (error) {
+          console.error('Failed to upload document:', error);
+          set({ error: error.message });
+          throw error;
+        } finally {
+          set({ isLoading: false });
+        }
       },
       
-      removeDocument: (documentId) => {
-        const { uploadedDocuments } = get();
-        set({
-          uploadedDocuments: uploadedDocuments.filter(doc => doc.id !== documentId),
-        });
+      removeDocument: async (documentId) => {
+        try {
+          set({ isLoading: true, error: null });
+          
+          await documentsAPI.delete(documentId);
+          
+          const { uploadedDocuments } = get();
+          set({
+            uploadedDocuments: uploadedDocuments.filter(doc => doc.id !== documentId),
+          });
+          
+        } catch (error) {
+          console.error('Failed to remove document:', error);
+          set({ error: error.message });
+          throw error;
+        } finally {
+          set({ isLoading: false });
+        }
+      },
+      
+      loadDocuments: async () => {
+        try {
+          const apiDocuments = await documentsAPI.getAll();
+          const documents = apiDocuments.map(transformers.documentFromAPI);
+          set({ uploadedDocuments: documents });
+        } catch (error) {
+          console.error('Failed to load documents:', error);
+          set({ error: error.message });
+        }
       },
       
       setAidaTyping: (typing) => {
         set({ isAidaTyping: typing });
       },
       
-      updateDailyGoal: (goal) => {
-        set({ dailyGoal: goal });
-      },
-      
-      updateStreak: () => {
-        const { currentStreak, todayStudyTime, dailyGoal } = get();
-        if (todayStudyTime >= dailyGoal) {
-          set({ currentStreak: currentStreak + 1 });
+      // Progress Actions
+      loadUserProgress: async () => {
+        try {
+          const progress = await progressAPI.getUserProgress();
+          set({
+            dailyGoal: progress.daily_goal,
+            todayStudyTime: progress.today_study_time,
+            currentStreak: progress.current_streak,
+            totalStudyTime: progress.total_study_time,
+            totalMindfulTime: progress.total_mindful_time,
+          });
+        } catch (error) {
+          console.error('Failed to load user progress:', error);
+          set({ error: error.message });
         }
       },
       
+      updateDailyGoal: async (goal) => {
+        try {
+          set({ isLoading: true, error: null });
+          
+          await progressAPI.updateDailyGoal(goal);
+          set({ dailyGoal: goal });
+          
+        } catch (error) {
+          console.error('Failed to update daily goal:', error);
+          set({ error: error.message });
+          throw error;
+        } finally {
+          set({ isLoading: false });
+        }
+      },
+      
+      updateStreak: async () => {
+        try {
+          const result = await progressAPI.updateStreak();
+          set({ currentStreak: result.current_streak });
+        } catch (error) {
+          console.error('Failed to update streak:', error);
+          set({ error: error.message });
+        }
+      },
+      
+      // UI Actions
       setCurrentScreen: (screen) => {
         set({ currentScreen: screen });
       },
       
       setTimerRunning: (running) => {
         set({ isTimerRunning: running });
+      },
+      
+      setLoading: (loading) => {
+        set({ isLoading: loading });
+      },
+      
+      setError: (error) => {
+        set({ error });
       },
       
       reset: () => {
@@ -410,6 +602,12 @@ export const useAppStore = create<AppStore>()(
     {
       name: 'alden-app-store',
       storage: createJSONStorage(() => AsyncStorage),
+      // Only persist UI state and user preferences, not data that comes from API
+      partialize: (state) => ({
+        activeConversation: state.activeConversation,
+        currentScreen: state.currentScreen,
+        dailyGoal: state.dailyGoal,
+      }),
     }
   )
 ); 

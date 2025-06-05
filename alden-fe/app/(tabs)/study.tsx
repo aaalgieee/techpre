@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { View, Text, ScrollView, TouchableOpacity, TextInput, Alert } from 'react-native';
+import { View, Text, ScrollView, TouchableOpacity, TextInput, Alert, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useAppStore } from '../../store/useAppStore';
@@ -11,9 +11,12 @@ export default function StudyScreen() {
   const { 
     activeSession, 
     isTimerRunning, 
+    isLoading,
+    error,
     startStudySession, 
     endStudySession,
-    setTimerRunning 
+    setTimerRunning,
+    setError 
   } = useAppStore();
 
   const [subject, setSubject] = useState('');
@@ -51,18 +54,32 @@ export default function StudyScreen() {
   const selectedTechnique = techniques.find(t => t.id === technique);
   const sessionDuration = parseInt(customDuration) || selectedTechnique?.duration || 25;
 
-  const handleStartSession = () => {
+  const handleStartSession = async () => {
     if (!subject.trim()) {
       Alert.alert('Missing Subject', 'Please enter what you\'ll be studying.');
       return;
     }
 
-    startStudySession({
-      subject: subject.trim(),
-      goal: goal.trim() || 'Focus and learn',
-      technique,
-      duration: sessionDuration,
-    });
+    try {
+      // Clear any previous errors
+      setError(null);
+      
+      await startStudySession({
+        subject: subject.trim(),
+        goal: goal.trim() || 'Focus and learn',
+        technique,
+        duration: sessionDuration,
+      });
+
+      // Clear form after successful start
+      setSubject('');
+      setGoal('');
+    } catch (error) {
+      Alert.alert(
+        'Failed to Start Session',
+        'There was an error starting your study session. Please check your connection and try again.'
+      );
+    }
   };
 
   const handleTimerStart = () => {
@@ -84,7 +101,7 @@ export default function StudyScreen() {
           style: 'destructive',
           onPress: () => {
             setTimerRunning(false);
-            endStudySession();
+            handleEndSession();
           }
         },
       ]
@@ -104,13 +121,52 @@ export default function StudyScreen() {
     );
   };
 
-  const endSessionWithRating = (focusScore: number) => {
-    endStudySession(focusScore);
+  const endSessionWithRating = async (focusScore: number) => {
+    try {
+      await endStudySession(focusScore);
+    } catch (error) {
+      Alert.alert(
+        'Error',
+        'Failed to end session. Please check your connection and try again.'
+      );
+    }
+  };
+
+  const handleEndSession = async () => {
+    try {
+      await endStudySession();
+    } catch (error) {
+      Alert.alert(
+        'Error',
+        'Failed to end session. Please check your connection and try again.'
+      );
+    }
+  };
+
+  // Show error message if there's an error
+  const ErrorBanner = () => {
+    if (!error) return null;
+    
+    return (
+      <View className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-3 mx-6 mb-4">
+        <View className="flex-row items-center">
+          <Ionicons name="warning" size={16} color="#dc2626" />
+          <Text className="text-red-700 dark:text-red-300 text-sm ml-2 flex-1">
+            {error}
+          </Text>
+          <TouchableOpacity onPress={() => setError(null)}>
+            <Ionicons name="close" size={16} color="#dc2626" />
+          </TouchableOpacity>
+        </View>
+      </View>
+    );
   };
 
   if (activeSession) {
     return (
       <SafeAreaView className="flex-1 bg-calm-50 dark:bg-calm-900" edges={['top', 'left', 'right']}>
+        <ErrorBanner />
+        
         <View className="flex-1 justify-center items-center px-6">
           {/* Session Header */}
           <View className="items-center mb-8">
@@ -127,14 +183,14 @@ export default function StudyScreen() {
                 color="#0ea5e9" 
               />
               <Text className="text-primary-700 dark:text-primary-300 ml-2 font-medium capitalize">
-                {technique.replace('_', ' ')}
+                {activeSession.technique.replace('_', ' ')}
               </Text>
             </View>
           </View>
 
           {/* Timer */}
           <Timer
-            duration={sessionDuration}
+            duration={activeSession.duration}
             isRunning={isTimerRunning}
             onStart={handleTimerStart}
             onPause={handleTimerPause}
@@ -148,9 +204,9 @@ export default function StudyScreen() {
               💡 Focus Tip
             </Text>
             <Text className="text-sm text-calm-600 dark:text-calm-400">
-              {technique === 'pomodoro' && 'Focus on just one task. When the timer rings, take a 5-minute break.'}
-              {technique === 'deep_work' && 'Eliminate all distractions. This is your time for deep, concentrated work.'}
-              {technique === 'active_recall' && 'Test yourself regularly. Try to recall information without looking at your notes.'}
+              {activeSession.technique === 'pomodoro' && 'Focus on just one task. When the timer rings, take a 5-minute break.'}
+              {activeSession.technique === 'deep_work' && 'Eliminate all distractions. This is your time for deep, concentrated work.'}
+              {activeSession.technique === 'active_recall' && 'Test yourself regularly. Try to recall information without looking at your notes.'}
             </Text>
           </View>
         </View>
@@ -160,6 +216,8 @@ export default function StudyScreen() {
 
   return (
     <SafeAreaView className="flex-1 bg-calm-50 dark:bg-calm-900" edges={['top', 'left', 'right']}>
+      <ErrorBanner />
+      
       <ScrollView className="flex-1 px-6" showsVerticalScrollIndicator={false}>
         {/* Header */}
         <View className="pt-6 pb-4">
@@ -187,6 +245,7 @@ export default function StudyScreen() {
               placeholder="e.g., Mathematics, Physics, History..."
               className="bg-white dark:bg-calm-800 border border-calm-200 dark:border-calm-700 rounded-lg px-4 py-3 text-calm-900 dark:text-calm-100"
               placeholderTextColor="#94a3b8"
+              editable={!isLoading}
             />
           </View>
 
@@ -200,6 +259,7 @@ export default function StudyScreen() {
               placeholder="e.g., Complete Chapter 5, Review notes..."
               className="bg-white dark:bg-calm-800 border border-calm-200 dark:border-calm-700 rounded-lg px-4 py-3 text-calm-900 dark:text-calm-100"
               placeholderTextColor="#94a3b8"
+              editable={!isLoading}
             />
           </View>
         </View>
@@ -214,11 +274,12 @@ export default function StudyScreen() {
             <TouchableOpacity
               key={tech.id}
               onPress={() => setTechnique(tech.id)}
+              disabled={isLoading}
               className={`flex-row items-center p-4 rounded-xl mb-3 border ${
                 technique === tech.id 
                   ? 'bg-primary-50 dark:bg-primary-900/20 border-primary-200 dark:border-primary-800' 
                   : 'bg-white dark:bg-calm-800 border-calm-200 dark:border-calm-700'
-              }`}
+              } ${isLoading ? 'opacity-60' : ''}`}
             >
               <View className={`w-12 h-12 rounded-full items-center justify-center ${tech.color}`}>
                 <Ionicons name={tech.icon as any} size={24} color="white" />
@@ -259,6 +320,7 @@ export default function StudyScreen() {
               keyboardType="numeric"
               className="bg-white dark:bg-calm-800 border border-calm-200 dark:border-calm-700 rounded-lg px-4 py-3 text-calm-900 dark:text-calm-100 w-24"
               placeholderTextColor="#94a3b8"
+              editable={!isLoading}
             />
           </View>
         </View>
@@ -279,7 +341,10 @@ export default function StudyScreen() {
             <Text className="text-sm text-mindful-600 dark:text-mindful-400 mb-3">
               A 2-3 minute breathing exercise can help you focus better during your study session.
             </Text>
-            <TouchableOpacity className="bg-mindful-500 px-4 py-2 rounded-lg self-start">
+            <TouchableOpacity 
+              className="bg-mindful-500 px-4 py-2 rounded-lg self-start"
+              disabled={isLoading}
+            >
               <Text className="text-white font-medium text-sm">Start Focus Boost (4min)</Text>
             </TouchableOpacity>
           </View>
@@ -288,12 +353,19 @@ export default function StudyScreen() {
         {/* Start Button */}
         <TouchableOpacity
           onPress={handleStartSession}
-          className="bg-primary-500 rounded-xl py-4 mb-8 shadow-sm"
-          disabled={!subject.trim()}
+          className={`bg-primary-500 rounded-xl py-4 mb-8 shadow-sm ${
+            (!subject.trim() || isLoading) ? 'opacity-60' : ''
+          }`}
+          disabled={!subject.trim() || isLoading}
         >
-          <Text className="text-white text-lg font-semibold text-center">
-            Start Study Session
-          </Text>
+          <View className="flex-row items-center justify-center">
+            {isLoading && (
+              <ActivityIndicator size="small" color="white" style={{ marginRight: 8 }} />
+            )}
+            <Text className="text-white text-lg font-semibold">
+              {isLoading ? 'Starting Session...' : 'Start Study Session'}
+            </Text>
+          </View>
         </TouchableOpacity>
       </ScrollView>
     </SafeAreaView>
